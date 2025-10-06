@@ -6,7 +6,8 @@ import math
 
 
 # take hash value in list and input and returns the r and x value as array
-def calculate_r_and_x(h): 
+def calculate_r_and_x(password): 
+    h= list(create_sha_key(password))
     r = 0
     x  = 0
     
@@ -25,7 +26,5 @@ def calculate_r_and_x(h):
 
 
 
-h= list(create_sha_key("JenilParmarIsGreatCoder"))
 
 
-print(calculate_r_and_x(h))

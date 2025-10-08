@@ -56,11 +56,7 @@ def Substitute(B):
         f, d = update_df(R, si, d)
 
     return out
-block = [120, 45, 200, 88]
 
-output = Substitute(block)
-print("Input Block: ", block)
-print("Output Block:", output)
 
 # %%
 def Substitute_Inv(out):
@@ -99,114 +95,118 @@ def Substitute_Inv(out):
 
 
 # %%
-# --- Global seeds (persist across calls) ---
+# --- Global seeds (will be set inside perturbation) ---
 Seed_r = np.int64(0)
 Seed_c = np.int64(0)
 
-# --- Randomize function ---
 def Randomize(seed):
-    seed = seed ^ (seed << 21)
-    seed = seed ^ (seed >> 35)
-    seed = seed ^ (seed << 4)
-    seed = seed & 0xFFFFFFFFFFFFFFFF  # keep 64-bit
-    return seed
+    """64-bit safe randomizer using xorshift pattern — avoids OverflowError."""
+    # use unsigned 64-bit (np.uint64) for masking and bitwise operations
+    mask = np.uint64(0xFFFFFFFFFFFFFFFF)
+    seed = np.uint64(seed) & mask
 
-# --- Update function for pixel perturbation ---
-def Update(r, c, s, N):
+    seed ^= (seed << np.uint64(21)) & mask
+    seed ^= (seed >> np.uint64(35)) & mask
+    seed ^= (seed << np.uint64(4)) & mask
+
+    # convert back to signed 64-bit for compatibility with np.int64 operations
+    return np.int64(seed & mask)
+
+def Update(r: int, c: int, s: int, N: int, M: int):
+    """
+    Update row and column positions based on pixel value s (0..255).
+    Keeps everything in 64-bit range to avoid overflow.
+    """
     global Seed_r, Seed_c
 
-    # Ensure Python int (not uint8)
-    s = int(s)
-    Seed_r = int(Seed_r)
-    Seed_c = int(Seed_c)
+    # Mix pixel into seeds
+    Seed_r = np.int64(Seed_r ^ np.int64(s))
+    Seed_c = np.int64(Seed_c ^ np.int64((s << 3) | (s >> 5)))
 
-    # Step 2: Update Seed_r
-    Seed_r = Seed_r ^ (s // 256)
+    # Randomize both seeds safely (64-bit masked)
+    Seed_r = Randomize(Seed_r)
+    Seed_c = Randomize(Seed_c)
 
-    # Step 3: Update Seed_c
-    Seed_c = Seed_c ^ (s % 256)
+    # Map to valid positions
+    r_new = int((int(Seed_r) % N) ^ int(r))
+    c_new = int((int(Seed_c) % M) ^ int(c))
 
-    # Step 4: Update position (example chaotic function)
-    r = (r + Seed_r) % N
-    c = (c + Seed_c) % N
+    # Ensure indices in bounds
+    r_new = r_new % N
+    c_new = c_new % M
 
-    return r, c
-
+    return r_new, c_new
 
 
 # %%
-
-def Perturbation(Image):
-    """
-    Scramble the pixels of Image using chaotic Update function.
-    Image: N x N numpy array
-    Returns: Image_p (scrambled)
-    """
-    N = Image.shape[0]  # assuming square image
-
-    # --- Initialize empty output image ---
-    Image_p = np.full((N, N), -1, dtype=int)  # -1 means empty
-
-    # --- Initialize positions from logistic map ---
-    # For simplicity, we use random numbers here; replace with logistic map if available
-    r = np.random.randint(0, N)
-    c = np.random.randint(0, N)
-
-    # --- Initialize global seeds ---
+def Perturbation(Image: np.ndarray, r_init, c_init):
     global Seed_r, Seed_c
+    N, M = Image.shape  # works even if rectangular
+
+    img = np.array(Image, copy=False)
+
+    # ✅ Fix: use (N, M)
+    Image_p = np.full((N, M), -1, dtype=int)
+
     Seed_r = np.int64(0)
     Seed_c = np.int64(0)
 
-    # --- Main loop over pixels ---
-    for i in range(N):
-        for j in range(N):
-            pixel = Image[i, j]
+    def _map_to_index(v, length):
+        if isinstance(v, (float, np.floating)):
+            frac = v - math.floor(v)
+            return int((frac * length)) % length
+        else:
+            return int(v) % length
 
-            # Try to place pixel at (r, c)
+    r = _map_to_index(r_init, N)
+    c = _map_to_index(c_init, M)
+
+    for i in range(N):
+        for j in range(M):
+            pixel = int(img[i, j])
+
             placed = False
             if Image_p[r, c] == -1:
                 Image_p[r, c] = pixel
                 placed = True
             else:
-                # Collision: search down the column first
                 for rr in range(N):
                     if Image_p[rr, c] == -1:
                         Image_p[rr, c] = pixel
                         placed = True
-                        r = rr  # update r to where we placed pixel
+                        r = rr
                         break
-
-                # If still not placed, search next columns
                 if not placed:
-                    for cc in range(N):
+                    outer_break = False
+                    for cc in range(M):
                         for rr in range(N):
                             if Image_p[rr, cc] == -1:
                                 Image_p[rr, cc] = pixel
                                 r, c = rr, cc
                                 placed = True
+                                outer_break = True
                                 break
-                        if placed:
+                        if outer_break:
                             break
 
-            # --- Update position using Update function ---
-            r, c = Update(r, c, pixel, N)
+            r, c = Update(r, c, pixel, N, M)
 
-    return Image_p
-
+    Image_p[Image_p == -1] = 0
+    return Image_p.astype(img.dtype)
 
 # %%
-def Perturbation_Inv(Image_p):
+def Perturbation_Inv(Image_p , r, c):
     """
     Restore the original image from a scrambled Image_p.
     Image_p: N x N scrambled image
     Returns: restored Image
     """
     N = Image_p.shape[0]
-    Image = np.full((N, N), -1, dtype=int)  # initialize output
+    M = Image_p.shape[1]
+    Image = np.full((N, M), -1, dtype=int)  # initialize output
 
     # --- Initialize positions using same logistic map as forward ---
-    r = np.random.randint(0, N)
-    c = np.random.randint(0, N)
+  
 
     # --- Reset global seeds ---
     global Seed_r, Seed_c
@@ -215,7 +215,7 @@ def Perturbation_Inv(Image_p):
 
     # --- Main loop over pixels ---
     for i in range(N):
-        for j in range(N):
+        for j in range(M):
             # Try to get pixel from (r, c)
             pixel = None
             if Image_p[r, c] != -1:
@@ -232,7 +232,7 @@ def Perturbation_Inv(Image_p):
                 # If not found, search next columns
                 if pixel is None:
                     found = False
-                    for cc in range(N):
+                    for cc in range(M):
                         for rr in range(N):
                             if Image_p[rr, cc] != -1:
                                 pixel = Image_p[rr, cc]
@@ -246,7 +246,7 @@ def Perturbation_Inv(Image_p):
             Image[i, j] = pixel
 
             # --- Update position using Update function ---
-            r, c = Update(r, c, Image[i, j], N)
+            r, c = Update(r, c, Image[i, j], N , M)
 
     return Image
 

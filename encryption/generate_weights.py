@@ -11,6 +11,3 @@ def create_weights(prev, num):
         prev = x_temp
     return np.array(x_weights)
 
-
-
-print(create_weights(x,200))

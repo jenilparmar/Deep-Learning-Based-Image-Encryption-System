@@ -17,7 +17,7 @@ from forward_pass import Substitute, Perturbation, Substitute_Inv, Perturbation_
 from Deferentail_Neural_network import DifferentialNeuralNetwork
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+CORS(app=app)  # Enable CORS for frontend communication
 
 def encrypt_image(image_array, password):
     """
@@ -192,6 +192,87 @@ def process_image():
             'operation': operation
         })
     
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/process_base64', methods=['POST'])
+def process_image_base64():
+    """
+    POST endpoint to encrypt or decrypt an image from base64.
+
+    Expected JSON data:
+        - image: base64 encoded image string
+        - key: encryption/decryption key (string)
+        - operation: 'encrypt' or 'decrypt'
+
+    Returns:
+        JSON response with base64 encoded processed image
+    """
+    print("Received POST to /api/process_base64")
+    try:
+        # Get JSON data
+        data = request.get_json()
+        print("Data received:", data)
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+
+        if 'image' not in data:
+            return jsonify({'error': 'No image base64 provided'}), 400
+
+        if 'key' not in data:
+            return jsonify({'error': 'No encryption key provided'}), 400
+
+        if 'operation' not in data:
+            return jsonify({'error': 'No operation specified'}), 400
+
+        # Get data
+        image_base64 = data['image']
+        encryption_key = data['key']
+        operation = data['operation']
+
+        # Validate operation
+        if operation not in ['encrypt', 'decrypt']:
+            return jsonify({'error': 'Invalid operation. Must be "encrypt" or "decrypt"'}), 400
+
+        # Validate key length
+        if len(encryption_key) < 8:
+            return jsonify({'error': 'Encryption key must be at least 8 characters long'}), 400
+
+        # Decode base64 image
+        try:
+            image_bytes = base64.b64decode(image_base64)
+            image = Image.open(io.BytesIO(image_bytes)).convert('L')  # Convert to grayscale
+            image_array = np.array(image)
+        except Exception as e:
+            return jsonify({'error': f'Invalid base64 image: {str(e)}'}), 400
+
+        # Process image based on operation
+        if operation == 'encrypt':
+            processed_array = encrypt_image(image_array, encryption_key)
+            message = 'Image encrypted successfully'
+        else:  # decrypt
+            processed_array = decrypt_image(image_array, encryption_key)
+            message = 'Image decrypted successfully'
+
+        # Convert processed array back to image
+        processed_image = Image.fromarray(processed_array.astype(np.uint8))
+
+        # Convert to base64 for JSON response
+        buffered = io.BytesIO()
+        processed_image.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        print(image_base64)
+        return jsonify({
+            'success': True,
+            'message': message,
+            'image': f'data:image/png;base64,{img_base64}',
+            'operation': operation
+        })
+
     except Exception as e:
         return jsonify({
             'success': False,
